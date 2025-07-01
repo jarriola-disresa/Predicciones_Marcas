@@ -103,35 +103,7 @@ def get_summary_stats(df):
     }
 
 def create_kpi_cards(stats):
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            label="📦 Total Ventas",
-            value=f"{stats['total_quantity']:,.0f}",
-            delta=None
-        )
-    
-    with col2:
-        st.metric(
-            label="📅 Promedio Diario",
-            value=f"{stats['avg_daily_sales']:,.0f}",
-            delta=None
-        )
-    
-    with col3:
-        st.metric(
-            label="🌍 Países",
-            value=f"{stats['unique_countries']}",
-            delta=None
-        )
-    
-    with col4:
-        st.metric(
-            label="🏢 Bodegas",
-            value=f"{stats['unique_stores']}",
-            delta=None
-        )
+    pass
 
 def apply_filters(df):
     with st.sidebar:
@@ -576,6 +548,16 @@ def display_predictions(predicciones, df_model, unidad_tiempo):
         )
 
 def main():
+    # Limpiar cualquier estado previo
+    if 'metrics_df' in st.session_state:
+        del st.session_state['metrics_df']
+    if 'predicciones' in st.session_state:
+        del st.session_state['predicciones']
+    if 'df_model' in st.session_state:
+        del st.session_state['df_model']
+    if 'unidad_tiempo' in st.session_state:
+        del st.session_state['unidad_tiempo']
+    
     col1, col2 = st.columns([3, 1])
     
     with col1:
@@ -598,8 +580,6 @@ def main():
     df = load_data()
     stats = get_summary_stats(df)
     
-    st.subheader("📋 Resumen Ejecutivo")
-    create_kpi_cards(stats)
     st.markdown("---")
     
     df_filtered = apply_filters(df)
