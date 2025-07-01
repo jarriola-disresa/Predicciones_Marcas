@@ -7,8 +7,6 @@ import plotly.graph_objs as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import warnings
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-from sklearn.model_selection import train_test_split
 
 import pymongo 
 import hmac
@@ -273,188 +271,6 @@ def create_historical_charts(df):
             fig.update_layout(height=400)
             st.plotly_chart(fig, use_container_width=True)
 
-def calculate_model_metrics(df, unidad_tiempo):
-    """Calcula métricas de evaluación del modelo usando validación histórica"""
-    metrics_results = []
-    
-    if unidad_tiempo == 'Diario':
-        df['Periodo'] = df['Fecha']
-        df_model = df.groupby(['Pais', 'Bodega', 'CL_Season', 'Periodo'])['Cantidad'].sum().reset_index()
-        
-        groups = list(df_model.groupby(['Pais', 'Bodega', 'CL_Season']))
-        
-        # Limitar a máximo 10 grupos para velocidad
-        if len(groups) > 10:
-            groups = groups[:10]
-            st.info(f"📊 Evaluando una muestra de 10 segmentos de {len(list(df_model.groupby(['Pais', 'Bodega', 'CL_Season'])))} totales para mayor velocidad")
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        for idx, ((pais_val, bodega_val, season_val), group) in enumerate(groups):
-            status_text.text(f'Evaluando: {pais_val} - {bodega_val} - {season_val} ({idx+1}/{len(groups)})')
-            progress_bar.progress((idx + 1) / len(groups))
-            group = group.sort_values('Periodo')
-            if group.shape[0] < 30:  # Necesitamos suficientes datos
-                continue
-            
-            # Dividir en train/test (80/20)
-            split_idx = int(len(group) * 0.8)
-            train_data = group.iloc[:split_idx].copy()
-            test_data = group.iloc[split_idx:].copy()
-            
-            if len(test_data) < 5:  # Mínimo de datos de prueba
-                continue
-            
-            # Preparar características para entrenamiento
-            train_data['Dia_Num'] = (train_data['Periodo'] - train_data['Periodo'].min()).dt.days
-            train_data['weekday'] = train_data['Periodo'].dt.weekday
-            train_data['is_weekend'] = train_data['weekday'].isin([5, 6]).astype(int)
-            train_data['month'] = train_data['Periodo'].dt.month
-            train_data['day'] = train_data['Periodo'].dt.day
-            train_data['quarter'] = train_data['Periodo'].dt.quarter
-            train_data['weekofyear'] = train_data['Periodo'].dt.isocalendar().week.astype(int)
-            train_data['year'] = train_data['Periodo'].dt.year
-            
-            train_data['lag_7'] = train_data['Cantidad'].shift(7)
-            train_data['lag_30'] = train_data['Cantidad'].shift(30)
-            train_data['rolling_7'] = train_data['Cantidad'].rolling(window=7, min_periods=1).mean()
-            train_data['rolling_30'] = train_data['Cantidad'].rolling(window=30, min_periods=1).mean()
-            train_data = train_data.fillna(train_data['Cantidad'].mean())
-            
-            # Entrenar modelo (versión más rápida)
-            X_train = train_data[['Dia_Num', 'weekday', 'is_weekend', 'month', 'day', 'quarter', 'weekofyear', 'year', 'lag_7', 'lag_30', 'rolling_7', 'rolling_30']]
-            y_train = train_data['Cantidad']
-            
-            model = XGBRegressor(n_estimators=50, max_depth=4, learning_rate=0.1, random_state=42, n_jobs=-1, verbosity=0)
-            model.fit(X_train, y_train)
-            
-            # Preparar datos de prueba
-            test_predictions = []
-            for _, row in test_data.iterrows():
-                dia_num_pred = (row['Periodo'] - train_data['Periodo'].min()).days
-                weekday_pred = row['Periodo'].weekday()
-                is_weekend_pred = int(weekday_pred in [5, 6])
-                month_pred = row['Periodo'].month
-                day_pred = row['Periodo'].day
-                quarter_pred = (row['Periodo'].month - 1) // 3 + 1
-                weekofyear_pred = row['Periodo'].isocalendar()[1]
-                year_pred = row['Periodo'].year
-                
-                last_values = train_data.tail(30)
-                lag_7_val = last_values['Cantidad'].mean()
-                lag_30_val = train_data['Cantidad'].mean()
-                rolling_7_val = last_values['Cantidad'].mean()
-                rolling_30_val = train_data['Cantidad'].mean()
-                
-                X_test = pd.DataFrame({
-                    'Dia_Num': [dia_num_pred],
-                    'weekday': [weekday_pred],
-                    'is_weekend': [is_weekend_pred],
-                    'month': [month_pred],
-                    'day': [day_pred],
-                    'quarter': [quarter_pred],
-                    'weekofyear': [weekofyear_pred],
-                    'year': [year_pred],
-                    'lag_7': [lag_7_val],
-                    'lag_30': [lag_30_val],
-                    'rolling_7': [rolling_7_val],
-                    'rolling_30': [rolling_30_val]
-                })
-                
-                pred = model.predict(X_test)[0]
-                test_predictions.append(max(pred, 0))
-            
-            # Calcular métricas
-            y_true = test_data['Cantidad'].values
-            y_pred = np.array(test_predictions)
-            
-            mae = mean_absolute_error(y_true, y_pred)
-            rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-            mape = np.mean(np.abs((y_true - y_pred) / np.maximum(y_true, 1))) * 100
-            
-            metrics_results.append({
-                'Pais': pais_val,
-                'Bodega': bodega_val,
-                'CL_Season': season_val,
-                'MAE': mae,
-                'RMSE': rmse,
-                'MAPE': mape,
-                'Test_Size': len(test_data),
-                'Actual_Mean': y_true.mean(),
-                'Predicted_Mean': y_pred.mean()
-            })
-    
-    elif unidad_tiempo == 'Mensual':
-        df['Periodo'] = df['Fecha'].dt.to_period('M').dt.to_timestamp()
-        df['Año'] = df['Periodo'].dt.year
-        df['Mes'] = df['Periodo'].dt.month
-        df['Mes_Num'] = df['Año'] * 12 + df['Mes']
-        df['Mes_sin'] = np.sin(2 * np.pi * df['Mes'] / 12)
-        df['Mes_cos'] = np.cos(2 * np.pi * df['Mes'] / 12)
-        
-        df_model = df.groupby(['Pais', 'Bodega', 'CL_Season', 'Periodo', 'Año', 'Mes', 'Mes_Num', 'Mes_sin', 'Mes_cos'])['Cantidad'].sum().reset_index()
-        
-        groups = list(df_model.groupby(['Pais', 'Bodega', 'CL_Season']))
-        
-        # Limitar a máximo 8 grupos para velocidad
-        if len(groups) > 8:
-            groups = groups[:8]
-            st.info(f"📊 Evaluando una muestra de 8 segmentos de {len(list(df_model.groupby(['Pais', 'Bodega', 'CL_Season'])))} totales para mayor velocidad")
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        for idx, ((pais_val, bodega_val, season_val), group) in enumerate(groups):
-            status_text.text(f'Evaluando: {pais_val} - {bodega_val} - {season_val} ({idx+1}/{len(groups)})')
-            progress_bar.progress((idx + 1) / len(groups))
-            group = group.sort_values('Periodo')
-            if group.shape[0] < 12:  # Necesitamos al menos 12 meses
-                continue
-            
-            # Dividir en train/test (80/20)
-            split_idx = int(len(group) * 0.8)
-            train_data = group.iloc[:split_idx].copy()
-            test_data = group.iloc[split_idx:].copy()
-            
-            if len(test_data) < 3:  # Mínimo 3 meses de prueba
-                continue
-            
-            # Entrenar modelo (versión más rápida)
-            X_train = train_data[['Mes_Num', 'Año', 'Mes_sin', 'Mes_cos']]
-            y_train = train_data['Cantidad']
-            
-            model = XGBRegressor(n_estimators=50, max_depth=3, learning_rate=0.15, random_state=42, n_jobs=-1, verbosity=0)
-            model.fit(X_train, y_train)
-            
-            # Predecir en datos de prueba
-            X_test = test_data[['Mes_Num', 'Año', 'Mes_sin', 'Mes_cos']]
-            y_pred = model.predict(X_test)
-            y_pred = np.maximum(y_pred, 0)  # No negativos
-            
-            # Calcular métricas
-            y_true = test_data['Cantidad'].values
-            
-            mae = mean_absolute_error(y_true, y_pred)
-            rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-            mape = np.mean(np.abs((y_true - y_pred) / np.maximum(y_true, 1))) * 100
-            
-            metrics_results.append({
-                'Pais': pais_val,
-                'Bodega': bodega_val,
-                'CL_Season': season_val,
-                'MAE': mae,
-                'RMSE': rmse,
-                'MAPE': mape,
-                'Test_Size': len(test_data),
-                'Actual_Mean': y_true.mean(),
-                'Predicted_Mean': y_pred.mean()
-            })
-        
-        progress_bar.empty()
-        status_text.empty()
-    
-    return pd.DataFrame(metrics_results)
 
 def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred):
     predicciones = []
@@ -816,102 +632,25 @@ def main():
     create_historical_charts(df_filtered)
     st.markdown("---")
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("🚀 Generar Predicciones", type="primary"):
-            with st.spinner('🤖 Generando predicciones...'):
-                predicciones = predict_sales_original(
-                    df_filtered.copy(), 
-                    unidad_tiempo, 
-                    pd.to_datetime(fecha_inicio_pred), 
-                    pd.to_datetime(fecha_fin_pred)
-                )
-                
-                if unidad_tiempo == 'Diario':
-                    df_model = df_filtered.groupby(['Pais', 'Bodega', 'CL_Season', 'Fecha'])['Cantidad'].sum().reset_index()
-                    df_model.rename(columns={'Fecha': 'Periodo'}, inplace=True)
-                else:
-                    df_filtered['Periodo'] = df_filtered['Fecha'].dt.to_period('M').dt.to_timestamp()
-                    df_model = df_filtered.groupby(['Pais', 'Bodega', 'CL_Season', 'Periodo'])['Cantidad'].sum().reset_index()
-                
-                # Guardar en session_state
-                st.session_state['predicciones'] = predicciones
-                st.session_state['df_model'] = df_model
-                st.session_state['unidad_tiempo'] = unidad_tiempo
-    
-    with col2:
-        if st.button("📊 Evaluar Precisión del Modelo", type="secondary"):
-            with st.spinner('🔍 Calculando métricas de evaluación...'):
-                metrics_df = calculate_model_metrics(df_filtered.copy(), unidad_tiempo)
-                
-                # Guardar métricas en session_state
-                st.session_state['metrics_df'] = metrics_df
-                
-                if not metrics_df.empty:
-                    st.success("✅ Evaluación completada")
-                
-                else:
-                    st.warning("⚠️ No se pudieron calcular métricas. Verifica que haya suficientes datos históricos.")
-    
-    # Mostrar predicciones si están disponibles
-    if 'predicciones' in st.session_state and st.session_state['predicciones']:
-        display_predictions(st.session_state['predicciones'], st.session_state['df_model'], st.session_state['unidad_tiempo'])
-    
-    # Mostrar métricas si están disponibles
-    if 'metrics_df' in st.session_state and not st.session_state['metrics_df'].empty:
-        metrics_df = st.session_state['metrics_df']
-        
-        st.subheader("📈 Métricas de Evaluación del Modelo")
-        
-        # Métricas promedio
-        avg_mae = metrics_df['MAE'].mean()
-        avg_rmse = metrics_df['RMSE'].mean()
-        avg_mape = metrics_df['MAPE'].mean()
-        total_tests = metrics_df['Test_Size'].sum()
-        accuracy_pct = 100 - avg_mape
-        
-        col1_m, col2_m, col3_m, col4_m, col5_m = st.columns(5)
-        
-        with col1_m:
-            st.metric("MAE Promedio", f"{avg_mae:.1f}", help="Error Absoluto Medio")
-        with col2_m:
-            st.metric("RMSE Promedio", f"{avg_rmse:.1f}", help="Raíz del Error Cuadrático Medio")
-        with col3_m:
-            st.metric("MAPE Promedio", f"{avg_mape:.1f}%", help="Error Porcentual Absoluto Medio")
-        with col4_m:
-            st.metric("Precisión", f"{accuracy_pct:.1f}%", help="Precisión general del modelo")
-        with col5_m:
-            st.metric("Datos Evaluados", f"{total_tests}", help="Total de observaciones evaluadas")
-        
-        st.markdown("---")
-        st.write("### 📋 ¿Qué significan estas métricas?")
-        
-        col1_exp, col2_exp, col3_exp = st.columns(3)
-        
-        with col1_exp:
-            st.write("**🎯 MAE (Error Absoluto Medio)**")
-            st.write(f"• En promedio, el modelo se equivoca por **{avg_mae:.1f} unidades**")
-            st.write("• Ejemplo: Si predice 100, el valor real podría ser entre 90-110")
+    if st.button("🚀 Generar Predicciones", type="primary"):
+        with st.spinner('🤖 Generando predicciones...'):
+            predicciones = predict_sales_original(
+                df_filtered.copy(), 
+                unidad_tiempo, 
+                pd.to_datetime(fecha_inicio_pred), 
+                pd.to_datetime(fecha_fin_pred)
+            )
             
-        with col2_exp:
-            st.write("**📊 RMSE (Error Cuadrático Medio)**")
-            st.write(f"• Penaliza más los errores grandes: **{avg_rmse:.1f}**")
-            st.write("• Si RMSE ≈ MAE → errores consistentes")
-            st.write("• Si RMSE >> MAE → algunos errores muy grandes")
-            
-        with col3_exp:
-            st.write("**📈 MAPE (Error Porcentual)**")
-            st.write(f"• El modelo tiene **{avg_mape:.1f}% de error** en promedio")
-            st.write(f"• **Precisión del {accuracy_pct:.1f}%**")
-            if avg_mape < 10:
-                st.success("🎯 Excelente precisión")
-            elif avg_mape < 20:
-                st.info("✔️ Buena precisión")
-            elif avg_mape < 30:
-                st.warning("⚠️ Precisión regular")
+            if unidad_tiempo == 'Diario':
+                df_model = df_filtered.groupby(['Pais', 'Bodega', 'CL_Season', 'Fecha'])['Cantidad'].sum().reset_index()
+                df_model.rename(columns={'Fecha': 'Periodo'}, inplace=True)
             else:
-                st.error("❌ Baja precisión")
+                df_filtered['Periodo'] = df_filtered['Fecha'].dt.to_period('M').dt.to_timestamp()
+                df_model = df_filtered.groupby(['Pais', 'Bodega', 'CL_Season', 'Periodo'])['Cantidad'].sum().reset_index()
+            
+            display_predictions(predicciones, df_model, unidad_tiempo)
+    
+    
 
 
 if __name__ == "__main__":
