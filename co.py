@@ -539,7 +539,7 @@ def display_predictions(predicciones, df_model, unidad_tiempo):
         
         st.dataframe(display_df, use_container_width=True)
         
-        csv = display_df.to_csv(index=False)
+        csv = display_df.to_csv(index=False, sep=';')
         st.download_button(
             label="📥 Descargar Predicciones (CSV)",
             data=csv,
