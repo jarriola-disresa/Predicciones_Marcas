@@ -317,7 +317,7 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             
             # Adjust trends based on metric type
             if metric_column == 'USD_Total_SI_CD':
-                recent_trend = 1.03 if len(group) > 30 and group[metric_column].tail(30).mean() > group[metric_column].head(30).mean() else 1.01
+                recent_trend = 1.04 if len(group) > 30 and group[metric_column].tail(30).mean() > group[metric_column].head(30).mean() else 1.02
                 
                 year_trend = 1.0
                 if fecha_inicio_pred.year >= 2025:
@@ -326,9 +326,9 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                         data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
                         if len(data_2024) > 0 and len(data_2023) > 0:
                             growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                            year_trend = min(max(growth_rate, 0.95), 1.05)
+                            year_trend = max(growth_rate, 1.02)  # Minimum 2% growth for USD
             else:
-                recent_trend = 1.05 if len(group) > 30 and group[metric_column].tail(30).mean() > group[metric_column].head(30).mean() else 1.01
+                recent_trend = 1.06 if len(group) > 30 and group[metric_column].tail(30).mean() > group[metric_column].head(30).mean() else 1.02
                 
                 year_trend = 1.0
                 if fecha_inicio_pred.year >= 2025:
@@ -337,11 +337,9 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                         data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
                         if len(data_2024) > 0 and len(data_2023) > 0:
                             growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                            year_trend = min(max(growth_rate, 1.0), 1.03)
+                            year_trend = max(growth_rate, 1.03)  # Minimum 3% growth for quantity
             
             recent_trend = recent_trend * year_trend
-            
-            historical_max = group[metric_column].quantile(0.95)
             
             group = group.fillna(group[metric_column].mean())
 
@@ -395,11 +393,6 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
 
                 pred_model = model.predict(X_pred)[0] * recent_trend
                 
-                if metric_column == 'USD_Total_SI_CD':
-                    pred_model = min(pred_model, historical_max * 1.1)
-                else:
-                    pred_model = min(pred_model, historical_max * 1.2)
-                
                 if is_weekend_pred and not promedios_fines.empty and len(available_cols) >= 3:
                     # Build condition for matching weekend averages
                     conditions = [promedios_fines[col] == val for col, val in zip(available_cols, group_vals)]
@@ -450,7 +443,7 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                 continue
 
             if metric_column == 'USD_Total_SI_CD':
-                recent_trend = 1.02 if len(group) > 12 and group[metric_column].tail(6).mean() > group[metric_column].head(6).mean() else 1.01
+                recent_trend = 1.03 if len(group) > 12 and group[metric_column].tail(6).mean() > group[metric_column].head(6).mean() else 1.02
                 
                 year_trend = 1.0
                 if fecha_inicio_pred.year >= 2025:
@@ -459,9 +452,9 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                         data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
                         if len(data_2024) > 0 and len(data_2023) > 0:
                             growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                            year_trend = min(max(growth_rate, 0.95), 1.03)
+                            year_trend = max(growth_rate, 1.02)  # Minimum 2% growth for monthly USD
             else:
-                recent_trend = 1.03 if len(group) > 12 and group[metric_column].tail(6).mean() > group[metric_column].head(6).mean() else 1.01
+                recent_trend = 1.04 if len(group) > 12 and group[metric_column].tail(6).mean() > group[metric_column].head(6).mean() else 1.02
                 
                 year_trend = 1.0
                 if fecha_inicio_pred.year >= 2025:
@@ -470,11 +463,9 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                         data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
                         if len(data_2024) > 0 and len(data_2023) > 0:
                             growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                            year_trend = min(max(growth_rate, 1.0), 1.02)
+                            year_trend = max(growth_rate, 1.02)  # Minimum 2% growth for monthly quantity
             
             recent_trend = recent_trend * year_trend
-            
-            historical_max = group[metric_column].quantile(0.95)
 
             X_train = group[['Mes_Num', 'Año', 'Mes_sin', 'Mes_cos']]
             y_train = group[metric_column]
@@ -497,10 +488,6 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                         'Mes_cos': [np.cos(2 * np.pi * mes / 12)]
                     })
                     pred = model.predict(X_pred)[0] * recent_trend
-                    if metric_column == 'USD_Total_SI_CD':
-                        pred = min(pred, historical_max * 1.1)
-                    else:
-                        pred = min(pred, historical_max * 1.2)
                     pred = max(pred, 0)
                     
                     # Create prediction record
