@@ -250,8 +250,9 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
     status_text = st.empty()
     
     if unidad_tiempo == 'Diario':
-        peso_promedio = 0.3
-        peso_modelo = 0.7
+        # More balanced weekend weights - give more weight to historical averages on weekends
+        peso_promedio = 0.4
+        peso_modelo = 0.6
 
         df['weekday'] = df['Fecha'].dt.weekday
         fines_df = df[df['weekday'].isin([5, 6])].copy()
@@ -292,7 +293,8 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
             group['rolling_7'] = group['Cantidad'].rolling(window=7, min_periods=1).mean()
             group['rolling_30'] = group['Cantidad'].rolling(window=30, min_periods=1).mean()
             
-            recent_trend = 1.08 if len(group) > 30 and group['Cantidad'].tail(30).mean() > group['Cantidad'].head(30).mean() else 1.02
+            # More conservative trend calculation
+            recent_trend = 1.03 if len(group) > 30 and group['Cantidad'].tail(30).mean() > group['Cantidad'].head(30).mean() else 1.01
             
             year_trend = 1.0
             if fecha_inicio_pred.year >= 2025:
@@ -301,9 +303,13 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                     data_2023 = group[group['Periodo'].dt.year == 2023]['Cantidad']
                     if len(data_2024) > 0 and len(data_2023) > 0:
                         growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                        year_trend = max(growth_rate, 1.05)
+                        # Cap growth between -5% and +8%, no forced minimum
+                        year_trend = min(max(growth_rate, 0.95), 1.08)
             
             recent_trend = recent_trend * year_trend
+            
+            # Add ceiling to prevent extreme predictions
+            historical_max = group['Cantidad'].quantile(0.95)  # 95th percentile as ceiling
             
             group = group.fillna(group['Cantidad'].mean())
 
@@ -324,11 +330,19 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                 weekofyear_pred = fecha.isocalendar()[1]
                 year_pred = fecha.year
                 
-                last_values = group.tail(30)
-                lag_7_val = last_values['Cantidad'].mean()
-                lag_30_val = group['Cantidad'].mean()
-                rolling_7_val = last_values['Cantidad'].mean()
-                rolling_30_val = group['Cantidad'].mean()
+                # Proper lag features calculation
+                if len(group) >= 7:
+                    lag_7_val = group['Cantidad'].iloc[-7]
+                else:
+                    lag_7_val = group['Cantidad'].mean()
+                    
+                if len(group) >= 30:
+                    lag_30_val = group['Cantidad'].iloc[-30]
+                else:
+                    lag_30_val = group['Cantidad'].mean()
+                    
+                rolling_7_val = group['Cantidad'].tail(7).mean()
+                rolling_30_val = group['Cantidad'].tail(30).mean()
 
                 X_pred = pd.DataFrame({
                     'Dia_Num': [dia_num_pred],
@@ -346,6 +360,9 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                 })
 
                 pred_model = model.predict(X_pred)[0] * recent_trend
+                
+                # Apply ceiling to prevent extreme predictions
+                pred_model = min(pred_model, historical_max * 1.2)  # Max 120% of historical peak
 
                 if is_weekend_pred:
                     match = promedios_fines[
@@ -391,7 +408,8 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
             if group.shape[0] < 2:
                 continue
 
-            recent_trend = 1.05 if len(group) > 12 and group['Cantidad'].tail(6).mean() > group['Cantidad'].head(6).mean() else 1.02
+            # More conservative monthly trends
+            recent_trend = 1.02 if len(group) > 12 and group['Cantidad'].tail(6).mean() > group['Cantidad'].head(6).mean() else 1.01
             
             year_trend = 1.0
             if fecha_inicio_pred.year >= 2025:
@@ -400,9 +418,13 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                     data_2023 = group[group['Periodo'].dt.year == 2023]['Cantidad']
                     if len(data_2024) > 0 and len(data_2023) > 0:
                         growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                        year_trend = max(growth_rate, 1.03)
+                        # Cap growth between -5% and +5% for monthly
+                        year_trend = min(max(growth_rate, 0.95), 1.05)
             
             recent_trend = recent_trend * year_trend
+            
+            # Add ceiling for monthly predictions
+            historical_max = group['Cantidad'].quantile(0.95)
 
             X_train = group[['Mes_Num', 'Año', 'Mes_sin', 'Mes_cos']]
             y_train = group['Cantidad']
@@ -422,6 +444,8 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                         'Mes_cos': [np.cos(2 * np.pi * mes / 12)]
                     })
                     pred = model.predict(X_pred)[0] * recent_trend
+                    # Apply ceiling to prevent extreme monthly predictions
+                    pred = min(pred, historical_max * 1.15)  # Max 115% for monthly
                     pred = max(pred, 0)
                     predicciones.append({
                         'Pais': pais_val,
