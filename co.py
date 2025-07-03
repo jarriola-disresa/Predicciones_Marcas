@@ -292,7 +292,8 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
             group['rolling_7'] = group['Cantidad'].rolling(window=7, min_periods=1).mean()
             group['rolling_30'] = group['Cantidad'].rolling(window=30, min_periods=1).mean()
             
-            recent_trend = 1.06 if len(group) > 30 and group['Cantidad'].tail(30).mean() > group['Cantidad'].head(30).mean() else 1.02
+            # Natural trend calculation based purely on historical data
+            recent_trend = 1.03 if len(group) > 30 and group['Cantidad'].tail(30).mean() > group['Cantidad'].head(30).mean() else 1.01
             
             year_trend = 1.0
             if fecha_inicio_pred.year >= 2025:
@@ -301,7 +302,7 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                     data_2023 = group[group['Periodo'].dt.year == 2023]['Cantidad']
                     if len(data_2024) > 0 and len(data_2023) > 0:
                         growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                        year_trend = max(growth_rate, 1.03)  # Minimum 3% growth for 2025
+                        year_trend = growth_rate  # Use actual calculated growth, no forced minimum
             
             recent_trend = recent_trend * year_trend
             
@@ -399,7 +400,8 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
             if group.shape[0] < 2:
                 continue
 
-            recent_trend = 1.04 if len(group) > 12 and group['Cantidad'].tail(6).mean() > group['Cantidad'].head(6).mean() else 1.02
+            # Natural monthly trend calculation
+            recent_trend = 1.02 if len(group) > 12 and group['Cantidad'].tail(6).mean() > group['Cantidad'].head(6).mean() else 1.01
             
             year_trend = 1.0
             if fecha_inicio_pred.year >= 2025:
@@ -408,7 +410,7 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                     data_2023 = group[group['Periodo'].dt.year == 2023]['Cantidad']
                     if len(data_2024) > 0 and len(data_2023) > 0:
                         growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                        year_trend = max(growth_rate, 1.02)  # Minimum 2% growth for monthly
+                        year_trend = growth_rate  # Use actual calculated growth for monthly
             
             recent_trend = recent_trend * year_trend
 
