@@ -345,20 +345,8 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
 
                 pred_model = model.predict(X_pred)[0]  # Pure XGBoost prediction
 
-                if is_weekend_pred:
-                    match = promedios_fines[
-                        (promedios_fines['Pais'] == pais_val) &
-                        (promedios_fines['Bodega'] == bodega_val) &
-                        (promedios_fines['CL_Season'] == season_val) &
-                        (promedios_fines['weekday'] == weekday_pred)
-                    ]
-                    if not match.empty:
-                        prom = match['Promedio_Finde'].values[0]
-                        pred = max(peso_promedio * prom + peso_modelo * pred_model, 0)
-                    else:
-                        pred = max(pred_model, 0)
-                else:
-                    pred = max(pred_model, 0)
+                # Pure XGBoost prediction - no weekend adjustments
+                pred = max(pred_model, 0)
 
                 predicciones.append({
                     'Pais': pais_val,
