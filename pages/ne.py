@@ -315,36 +315,8 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             group['rolling_7'] = group[metric_column].rolling(window=7, min_periods=1).mean()
             group['rolling_30'] = group[metric_column].rolling(window=30, min_periods=1).mean()
             
-            # Adjust trends based on metric type
-            if metric_column == 'USD_Total_SI_CD':
-                # More conservative trends for USD amounts
-                recent_trend = 1.03 if len(group) > 30 and group[metric_column].tail(30).mean() > group[metric_column].head(30).mean() else 1.01
-                
-                year_trend = 1.0
-                if fecha_inicio_pred.year >= 2025:
-                    if len(group) > 365:
-                        data_2024 = group[group['Periodo'].dt.year == 2024][metric_column]
-                        data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
-                        if len(data_2024) > 0 and len(data_2023) > 0:
-                            growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                            year_trend = min(max(growth_rate, 0.95), 1.05)  # Cap between 95% and 105%
-            else:
-                # Moderately adjusted trends for quantity
-                recent_trend = 1.05 if len(group) > 30 and group[metric_column].tail(30).mean() > group[metric_column].head(30).mean() else 1.01
-                
-                year_trend = 1.0
-                if fecha_inicio_pred.year >= 2025:
-                    if len(group) > 365:
-                        data_2024 = group[group['Periodo'].dt.year == 2024][metric_column]
-                        data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
-                        if len(data_2024) > 0 and len(data_2023) > 0:
-                            growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                            year_trend = min(max(growth_rate, 1.0), 1.03)  # Cap at 103%
-            
-            recent_trend = recent_trend * year_trend
-            
-            # Add gentle ceiling for both metrics
-            historical_max = group[metric_column].quantile(0.95)  # 95th percentile as ceiling
+            # Fixed 7% growth for daily predictions (both USD and Quantity)
+            recent_trend = 1.07  # Consistent 7% growth vs historical data
             
             group = group.fillna(group[metric_column].mean())
 
@@ -399,12 +371,6 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
 
                 pred_model = model.predict(X_pred)[0] * recent_trend
                 
-                # Apply gentle ceiling to prevent extreme predictions
-                if metric_column == 'USD_Total_SI_CD':
-                    pred_model = min(pred_model, historical_max * 1.1)  # Max 110% for USD
-                else:
-                    pred_model = min(pred_model, historical_max * 1.2)  # Max 120% for quantity
-                
                 if is_weekend_pred and not promedios_fines.empty and len(available_cols) >= 3:
                     # Build condition for matching weekend averages
                     conditions = [promedios_fines[col] == val for col, val in zip(available_cols, group_vals)]
@@ -454,36 +420,8 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             if group.shape[0] < 2:
                 continue
 
-            # Adjust trends based on metric type for monthly predictions
-            if metric_column == 'USD_Total_SI_CD':
-                # More conservative trends for USD amounts
-                recent_trend = 1.02 if len(group) > 12 and group[metric_column].tail(6).mean() > group[metric_column].head(6).mean() else 1.01
-                
-                year_trend = 1.0
-                if fecha_inicio_pred.year >= 2025:
-                    if len(group) > 12:
-                        data_2024 = group[group['Periodo'].dt.year == 2024][metric_column]
-                        data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
-                        if len(data_2024) > 0 and len(data_2023) > 0:
-                            growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                            year_trend = min(max(growth_rate, 0.95), 1.03)  # Cap between 95% and 103%
-            else:
-                # Moderately adjusted trends for quantity (monthly)
-                recent_trend = 1.03 if len(group) > 12 and group[metric_column].tail(6).mean() > group[metric_column].head(6).mean() else 1.01
-                
-                year_trend = 1.0
-                if fecha_inicio_pred.year >= 2025:
-                    if len(group) > 12:
-                        data_2024 = group[group['Periodo'].dt.year == 2024][metric_column]
-                        data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
-                        if len(data_2024) > 0 and len(data_2023) > 0:
-                            growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
-                            year_trend = min(max(growth_rate, 1.0), 1.02)  # Cap at 102%
-            
-            recent_trend = recent_trend * year_trend
-            
-            # Add gentle ceiling for monthly predictions
-            historical_max = group[metric_column].quantile(0.95)  # 95th percentile as ceiling
+            # Fixed 7% growth for monthly predictions (both USD and Quantity)
+            recent_trend = 1.07  # Consistent 7% growth vs historical data
 
             X_train = group[['Mes_Num', 'Año', 'Mes_sin', 'Mes_cos']]
             y_train = group[metric_column]
@@ -506,11 +444,6 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                         'Mes_cos': [np.cos(2 * np.pi * mes / 12)]
                     })
                     pred = model.predict(X_pred)[0] * recent_trend
-                    # Apply gentle ceiling to prevent extreme predictions
-                    if metric_column == 'USD_Total_SI_CD':
-                        pred = min(pred, historical_max * 1.1)  # Max 110% for USD
-                    else:
-                        pred = min(pred, historical_max * 1.2)  # Max 120% for quantity
                     pred = max(pred, 0)
                     
                     # Create prediction record
