@@ -297,7 +297,8 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
             
             group = group.fillna(group['Cantidad'].mean())
 
-            X_train = group[['Dia_Num', 'weekday', 'is_weekend', 'month', 'day', 'quarter', 'weekofyear', 'year', 'lag_7', 'lag_30', 'rolling_7', 'rolling_30']]
+            # Time features that capture trends and seasonality
+            X_train = group[['Dia_Num', 'weekday', 'month', 'quarter', 'year']]
             y_train = group['Cantidad']
 
             model = XGBRegressor(n_estimators=300, max_depth=6, learning_rate=0.08, random_state=42, n_jobs=-1, verbosity=0)
@@ -314,33 +315,19 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                 weekofyear_pred = fecha.isocalendar()[1]
                 year_pred = fecha.year
                 
-                # Proper lag features using actual historical values
-                if len(group) >= 7:
-                    lag_7_val = group['Cantidad'].iloc[-7]
-                else:
-                    lag_7_val = group['Cantidad'].mean()
-                    
-                if len(group) >= 30:
-                    lag_30_val = group['Cantidad'].iloc[-30]
-                else:
-                    lag_30_val = group['Cantidad'].mean()
-                    
-                rolling_7_val = group['Cantidad'].tail(7).mean()
-                rolling_30_val = group['Cantidad'].tail(30).mean()
+                # Use simple historical averages for lag features
+                lag_7_val = group['Cantidad'].tail(30).mean()  # Last 30 days average
+                lag_30_val = group['Cantidad'].mean()  # Overall average
+                rolling_7_val = group['Cantidad'].tail(30).mean()  # Last 30 days average  
+                rolling_30_val = group['Cantidad'].mean()  # Overall average
 
+                # Prediction features including trend
                 X_pred = pd.DataFrame({
                     'Dia_Num': [dia_num_pred],
                     'weekday': [weekday_pred],
-                    'is_weekend': [is_weekend_pred],
                     'month': [month_pred],
-                    'day': [day_pred],
                     'quarter': [quarter_pred],
-                    'weekofyear': [weekofyear_pred],
-                    'year': [year_pred],
-                    'lag_7': [lag_7_val],
-                    'lag_30': [lag_30_val],
-                    'rolling_7': [rolling_7_val],
-                    'rolling_30': [rolling_30_val]
+                    'year': [year_pred]
                 })
 
                 pred_model = model.predict(X_pred)[0]  # Pure XGBoost prediction
@@ -380,6 +367,7 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
             # Pure XGBoost prediction for monthly - no artificial trends
             # Let the model learn from data naturally
 
+            # Monthly features with trend
             X_train = group[['Mes_Num', 'Año', 'Mes_sin', 'Mes_cos']]
             y_train = group['Cantidad']
 
@@ -391,6 +379,7 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                 end_mes = fecha_fin_pred.month if anio_pred == fecha_fin_pred.year else 12
                 for mes in range(start_mes, end_mes + 1):
                     mes_num_pred = anio_pred * 12 + mes
+                    # Monthly prediction with trend
                     X_pred = pd.DataFrame({
                         'Mes_Num': [mes_num_pred],
                         'Año': [anio_pred],

@@ -320,7 +320,8 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             
             group = group.fillna(group[metric_column].mean())
 
-            X_train = group[['Dia_Num', 'weekday', 'is_weekend', 'month', 'day', 'quarter', 'weekofyear', 'year', 'lag_7', 'lag_30', 'rolling_7', 'rolling_30']]
+            # Time features that capture trends and seasonality
+            X_train = group[['Dia_Num', 'weekday', 'month', 'quarter', 'year']]
             y_train = group[metric_column]
 
             if metric_column == 'USD_Total_SI_CD':
@@ -354,19 +355,13 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                 rolling_7_val = group[metric_column].tail(7).mean()
                 rolling_30_val = group[metric_column].tail(30).mean()
 
+                # Prediction features including trend
                 X_pred = pd.DataFrame({
                     'Dia_Num': [dia_num_pred],
                     'weekday': [weekday_pred],
-                    'is_weekend': [is_weekend_pred],
                     'month': [month_pred],
-                    'day': [day_pred],
                     'quarter': [quarter_pred],
-                    'weekofyear': [weekofyear_pred],
-                    'year': [year_pred],
-                    'lag_7': [lag_7_val],
-                    'lag_30': [lag_30_val],
-                    'rolling_7': [rolling_7_val],
-                    'rolling_30': [rolling_30_val]
+                    'year': [year_pred]
                 })
 
                 pred_model = model.predict(X_pred)[0]  # Pure XGBoost prediction
@@ -408,6 +403,7 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             # Pure XGBoost prediction for monthly - no artificial trends
             # Let the model learn from data naturally for both USD and Quantity
 
+            # Monthly features with trend
             X_train = group[['Mes_Num', 'Año', 'Mes_sin', 'Mes_cos']]
             y_train = group[metric_column]
 
@@ -422,6 +418,7 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                 end_mes = fecha_fin_pred.month if anio_pred == fecha_fin_pred.year else 12
                 for mes in range(start_mes, end_mes + 1):
                     mes_num_pred = anio_pred * 12 + mes
+                    # Monthly prediction with trend
                     X_pred = pd.DataFrame({
                         'Mes_Num': [mes_num_pred],
                         'Año': [anio_pred],
