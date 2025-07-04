@@ -315,8 +315,31 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             group['rolling_7'] = group[metric_column].rolling(window=7, min_periods=1).mean()
             group['rolling_30'] = group[metric_column].rolling(window=30, min_periods=1).mean()
             
-            # Fixed 7% growth for daily predictions (both USD and Quantity)
-            recent_trend = 1.07  # Consistent 7% growth vs historical data
+            # Intelligent trend calculation based on metric type
+            if metric_column == 'USD_Total_SI_CD':
+                recent_trend = 1.03 if len(group) > 30 and group[metric_column].tail(30).mean() > group[metric_column].head(30).mean() else 1.01
+                
+                year_trend = 1.0
+                if fecha_inicio_pred.year >= 2025:
+                    if len(group) > 365:
+                        data_2024 = group[group['Periodo'].dt.year == 2024][metric_column]
+                        data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
+                        if len(data_2024) > 0 and len(data_2023) > 0:
+                            growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
+                            year_trend = growth_rate  # Use actual calculated growth rate
+            else:
+                recent_trend = 1.05 if len(group) > 30 and group[metric_column].tail(30).mean() > group[metric_column].head(30).mean() else 1.01
+                
+                year_trend = 1.0
+                if fecha_inicio_pred.year >= 2025:
+                    if len(group) > 365:
+                        data_2024 = group[group['Periodo'].dt.year == 2024][metric_column]
+                        data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
+                        if len(data_2024) > 0 and len(data_2023) > 0:
+                            growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
+                            year_trend = growth_rate  # Use actual calculated growth rate
+            
+            recent_trend = recent_trend * year_trend
             
             group = group.fillna(group[metric_column].mean())
 
@@ -420,8 +443,31 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             if group.shape[0] < 2:
                 continue
 
-            # Fixed 7% growth for monthly predictions (both USD and Quantity)
-            recent_trend = 1.07  # Consistent 7% growth vs historical data
+            # Intelligent monthly trend calculation based on metric type
+            if metric_column == 'USD_Total_SI_CD':
+                recent_trend = 1.02 if len(group) > 12 and group[metric_column].tail(6).mean() > group[metric_column].head(6).mean() else 1.01
+                
+                year_trend = 1.0
+                if fecha_inicio_pred.year >= 2025:
+                    if len(group) > 12:
+                        data_2024 = group[group['Periodo'].dt.year == 2024][metric_column]
+                        data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
+                        if len(data_2024) > 0 and len(data_2023) > 0:
+                            growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
+                            year_trend = growth_rate  # Use actual calculated growth rate
+            else:
+                recent_trend = 1.03 if len(group) > 12 and group[metric_column].tail(6).mean() > group[metric_column].head(6).mean() else 1.01
+                
+                year_trend = 1.0
+                if fecha_inicio_pred.year >= 2025:
+                    if len(group) > 12:
+                        data_2024 = group[group['Periodo'].dt.year == 2024][metric_column]
+                        data_2023 = group[group['Periodo'].dt.year == 2023][metric_column]
+                        if len(data_2024) > 0 and len(data_2023) > 0:
+                            growth_rate = data_2024.mean() / data_2023.mean() if data_2023.mean() > 0 else 1.0
+                            year_trend = growth_rate  # Use actual calculated growth rate
+            
+            recent_trend = recent_trend * year_trend
 
             X_train = group[['Mes_Num', 'Año', 'Mes_sin', 'Mes_cos']]
             y_train = group[metric_column]
