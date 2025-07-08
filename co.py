@@ -324,11 +324,11 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
             scaler = StandardScaler()
             X_train_scaled = scaler.fit_transform(X_train)
             
-            # Modelo optimizado
+            # Modelo optimizado (balanceado velocidad/precisión)
             model = XGBRegressor(
-                n_estimators=500, 
-                max_depth=8, 
-                learning_rate=0.05, 
+                n_estimators=200,  # Reducido para velocidad
+                max_depth=6, 
+                learning_rate=0.08, 
                 subsample=0.8,
                 colsample_bytree=0.8,
                 reg_alpha=0.1,
@@ -338,9 +338,9 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                 verbosity=0
             )
             
-            # Validación cruzada temporal
-            if len(X_train) > 60:  # Solo si hay suficientes datos
-                tscv = TimeSeriesSplit(n_splits=3)
+            # Validación cruzada temporal (opcional para velocidad)
+            if len(X_train) > 90:  # Solo grupos grandes
+                tscv = TimeSeriesSplit(n_splits=2)  # Reducido de 3 a 2
                 cv_scores = []
                 for train_idx, val_idx in tscv.split(X_train_scaled):
                     X_cv_train, X_cv_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
@@ -516,11 +516,11 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
             scaler = StandardScaler()
             X_train_scaled = scaler.fit_transform(X_train)
             
-            # Modelo optimizado para mensual
+            # Modelo optimizado para mensual (balanceado velocidad/precisión)
             model = XGBRegressor(
-                n_estimators=400, 
-                max_depth=6, 
-                learning_rate=0.08, 
+                n_estimators=150,  # Reducido para velocidad
+                max_depth=5, 
+                learning_rate=0.1, 
                 subsample=0.9,
                 colsample_bytree=0.9,
                 reg_alpha=0.05,
@@ -530,9 +530,9 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                 verbosity=0
             )
             
-            # Validación cruzada temporal para mensual
-            if len(X_train) > 12:  # Solo si hay suficientes datos
-                tscv = TimeSeriesSplit(n_splits=3)
+            # Validación cruzada temporal para mensual (opcional para velocidad)
+            if len(X_train) > 18:  # Solo grupos grandes
+                tscv = TimeSeriesSplit(n_splits=2)  # Reducido de 3 a 2
                 cv_scores = []
                 for train_idx, val_idx in tscv.split(X_train_scaled):
                     X_cv_train, X_cv_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
