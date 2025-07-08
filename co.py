@@ -7,6 +7,9 @@ import plotly.graph_objs as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import warnings
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
 
 import pymongo 
 import hmac
@@ -248,22 +251,10 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
     predicciones = []
     progress_bar = st.progress(0)
     status_text = st.empty()
+    model_metrics = []
     
     if unidad_tiempo == 'Diario':
-        peso_promedio = 0.3
-        peso_modelo = 0.7
-
         df['weekday'] = df['Fecha'].dt.weekday
-        fines_df = df[df['weekday'].isin([5, 6])].copy()
-        fines_df['year'] = fines_df['Fecha'].dt.year
-        fines_df = fines_df[fines_df['year'].isin([2023, 2024, 2025])]
-        promedios_fines = (
-            fines_df.groupby(['Pais', 'Bodega', 'CL_Season', 'weekday'])['Cantidad']
-            .mean()
-            .reset_index()
-            .rename(columns={'Cantidad': 'Promedio_Finde'})
-        )
-
         df['Periodo'] = df['Fecha']
         df_model = df.groupby(['Pais', 'Bodega', 'CL_Season', 'Periodo'])['Cantidad'].sum().reset_index()
 
@@ -275,9 +266,12 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
             progress_bar.progress((idx + 1) / total_groups)
             
             group = group.sort_values('Periodo')
-            if group.shape[0] < 2:
+            
+            # Filtro de calidad: requiere al menos 30 días de datos
+            if group.shape[0] < 30:
                 continue
 
+            # Crear features temporales mejoradas
             group['Dia_Num'] = (group['Periodo'] - group['Periodo'].min()).dt.days
             group['weekday'] = group['Periodo'].dt.weekday
             group['is_weekend'] = group['weekday'].isin([5, 6]).astype(int)
@@ -287,23 +281,91 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
             group['weekofyear'] = group['Periodo'].dt.isocalendar().week.astype(int)
             group['year'] = group['Periodo'].dt.year
             
+            # Features de lag mejoradas
+            group['lag_1'] = group['Cantidad'].shift(1)
             group['lag_7'] = group['Cantidad'].shift(7)
+            group['lag_14'] = group['Cantidad'].shift(14)
             group['lag_30'] = group['Cantidad'].shift(30)
+            
+            # Features de rolling mejoradas
+            group['rolling_3'] = group['Cantidad'].rolling(window=3, min_periods=1).mean()
             group['rolling_7'] = group['Cantidad'].rolling(window=7, min_periods=1).mean()
+            group['rolling_14'] = group['Cantidad'].rolling(window=14, min_periods=1).mean()
             group['rolling_30'] = group['Cantidad'].rolling(window=30, min_periods=1).mean()
             
-            # Pure XGBoost prediction - no artificial trends
-            # Let the model learn from data naturally
+            # Features de tendencia
+            group['trend_7'] = group['Cantidad'].rolling(window=7, min_periods=1).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) > 1 else 0)
+            group['trend_30'] = group['Cantidad'].rolling(window=30, min_periods=1).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) > 1 else 0)
             
-            group = group.fillna(group['Cantidad'].mean())
+            # Features de volatilidad
+            group['volatility_7'] = group['Cantidad'].rolling(window=7, min_periods=1).std()
+            group['volatility_30'] = group['Cantidad'].rolling(window=30, min_periods=1).std()
+            
+            # Features estacionales
+            group['month_sin'] = np.sin(2 * np.pi * group['month'] / 12)
+            group['month_cos'] = np.cos(2 * np.pi * group['month'] / 12)
+            group['week_sin'] = np.sin(2 * np.pi * group['weekofyear'] / 52)
+            group['week_cos'] = np.cos(2 * np.pi * group['weekofyear'] / 52)
+            
+            # Rellenar valores faltantes con métodos más sofisticados
+            numeric_cols = ['lag_1', 'lag_7', 'lag_14', 'lag_30', 'rolling_3', 'rolling_7', 'rolling_14', 'rolling_30', 'trend_7', 'trend_30', 'volatility_7', 'volatility_30']
+            for col in numeric_cols:
+                group[col] = group[col].fillna(group['Cantidad'].mean())
 
-            # Time features that capture trends and seasonality
-            X_train = group[['Dia_Num', 'weekday', 'month', 'quarter', 'year']]
+            # Features expandidas para el modelo
+            feature_cols = ['Dia_Num', 'weekday', 'is_weekend', 'month', 'day', 'quarter', 'year', 'weekofyear',
+                          'lag_1', 'lag_7', 'lag_14', 'lag_30', 'rolling_3', 'rolling_7', 'rolling_14', 'rolling_30',
+                          'trend_7', 'trend_30', 'volatility_7', 'volatility_30', 'month_sin', 'month_cos', 'week_sin', 'week_cos']
+            
+            X_train = group[feature_cols]
             y_train = group['Cantidad']
-
-            model = XGBRegressor(n_estimators=300, max_depth=6, learning_rate=0.08, random_state=42, n_jobs=-1, verbosity=0)
-            model.fit(X_train, y_train)
-
+            
+            # Normalización de features
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            
+            # Modelo optimizado
+            model = XGBRegressor(
+                n_estimators=500, 
+                max_depth=8, 
+                learning_rate=0.05, 
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_alpha=0.1,
+                reg_lambda=0.1,
+                random_state=42, 
+                n_jobs=-1, 
+                verbosity=0
+            )
+            
+            # Validación cruzada temporal
+            if len(X_train) > 60:  # Solo si hay suficientes datos
+                tscv = TimeSeriesSplit(n_splits=3)
+                cv_scores = []
+                for train_idx, val_idx in tscv.split(X_train_scaled):
+                    X_cv_train, X_cv_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
+                    y_cv_train, y_cv_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+                    
+                    model.fit(X_cv_train, y_cv_train)
+                    y_pred = model.predict(X_cv_val)
+                    mae = mean_absolute_error(y_cv_val, y_pred)
+                    cv_scores.append(mae)
+                
+                avg_mae = np.mean(cv_scores)
+                model_metrics.append({
+                    'Pais': pais_val,
+                    'Bodega': bodega_val,
+                    'CL_Season': season_val,
+                    'MAE': avg_mae,
+                    'Data_Points': len(X_train)
+                })
+            
+            # Entrenar modelo final
+            model.fit(X_train_scaled, y_train)
+            
+            # Generar predicciones secuenciales
+            last_values = group.tail(1).copy()
+            
             for i in range((fecha_fin_pred - fecha_inicio_pred).days + 1):
                 fecha = fecha_inicio_pred + timedelta(days=i)
                 dia_num_pred = (fecha - group['Periodo'].min()).days
@@ -315,25 +377,65 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
                 weekofyear_pred = fecha.isocalendar()[1]
                 year_pred = fecha.year
                 
-                # Use simple historical averages for lag features
-                lag_7_val = group['Cantidad'].tail(30).mean()  # Last 30 days average
-                lag_30_val = group['Cantidad'].mean()  # Overall average
-                rolling_7_val = group['Cantidad'].tail(30).mean()  # Last 30 days average  
-                rolling_30_val = group['Cantidad'].mean()  # Overall average
+                # Usar valores lag reales de los últimos datos
+                lag_1_val = last_values['Cantidad'].iloc[-1] if i == 0 else predicciones[-1]['Predicción']
+                lag_7_val = group['Cantidad'].iloc[-7] if len(group) >= 7 else group['Cantidad'].mean()
+                lag_14_val = group['Cantidad'].iloc[-14] if len(group) >= 14 else group['Cantidad'].mean()
+                lag_30_val = group['Cantidad'].iloc[-30] if len(group) >= 30 else group['Cantidad'].mean()
+                
+                # Rolling values actualizados
+                rolling_3_val = group['Cantidad'].tail(3).mean()
+                rolling_7_val = group['Cantidad'].tail(7).mean()
+                rolling_14_val = group['Cantidad'].tail(14).mean()
+                rolling_30_val = group['Cantidad'].tail(30).mean()
+                
+                # Tendencia y volatilidad
+                trend_7_val = group['trend_7'].iloc[-1] if not pd.isna(group['trend_7'].iloc[-1]) else 0
+                trend_30_val = group['trend_30'].iloc[-1] if not pd.isna(group['trend_30'].iloc[-1]) else 0
+                volatility_7_val = group['volatility_7'].iloc[-1] if not pd.isna(group['volatility_7'].iloc[-1]) else 0
+                volatility_30_val = group['volatility_30'].iloc[-1] if not pd.isna(group['volatility_30'].iloc[-1]) else 0
+                
+                # Features estacionales
+                month_sin_val = np.sin(2 * np.pi * month_pred / 12)
+                month_cos_val = np.cos(2 * np.pi * month_pred / 12)
+                week_sin_val = np.sin(2 * np.pi * weekofyear_pred / 52)
+                week_cos_val = np.cos(2 * np.pi * weekofyear_pred / 52)
 
-                # Prediction features including trend
+                # Crear features para predicción
                 X_pred = pd.DataFrame({
                     'Dia_Num': [dia_num_pred],
                     'weekday': [weekday_pred],
+                    'is_weekend': [is_weekend_pred],
                     'month': [month_pred],
+                    'day': [day_pred],
                     'quarter': [quarter_pred],
-                    'year': [year_pred]
+                    'year': [year_pred],
+                    'weekofyear': [weekofyear_pred],
+                    'lag_1': [lag_1_val],
+                    'lag_7': [lag_7_val],
+                    'lag_14': [lag_14_val],
+                    'lag_30': [lag_30_val],
+                    'rolling_3': [rolling_3_val],
+                    'rolling_7': [rolling_7_val],
+                    'rolling_14': [rolling_14_val],
+                    'rolling_30': [rolling_30_val],
+                    'trend_7': [trend_7_val],
+                    'trend_30': [trend_30_val],
+                    'volatility_7': [volatility_7_val],
+                    'volatility_30': [volatility_30_val],
+                    'month_sin': [month_sin_val],
+                    'month_cos': [month_cos_val],
+                    'week_sin': [week_sin_val],
+                    'week_cos': [week_cos_val]
                 })
 
-                pred_model = model.predict(X_pred)[0]  # Pure XGBoost prediction
-
-                # Pure XGBoost prediction - no weekend adjustments
+                # Normalizar features de predicción
+                X_pred_scaled = scaler.transform(X_pred)
+                pred_model = model.predict(X_pred_scaled)[0]
+                
+                # Aplicar límites razonables
                 pred = max(pred_model, 0)
+                pred = min(pred, group['Cantidad'].max() * 2)  # Límite superior basado en datos históricos
 
                 predicciones.append({
                     'Pais': pais_val,
@@ -361,33 +463,168 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
             progress_bar.progress((idx + 1) / total_groups)
             
             group = group.sort_values('Periodo')
-            if group.shape[0] < 2:
+            
+            # Filtro de calidad: requiere al menos 6 meses de datos
+            if group.shape[0] < 6:
                 continue
 
-            # Pure XGBoost prediction for monthly - no artificial trends
-            # Let the model learn from data naturally
+            # Crear features temporales mejoradas para mensual
+            group['quarter'] = group['Periodo'].dt.quarter
+            group['month_of_year'] = group['Periodo'].dt.month
+            group['year_month'] = group['Año'] * 12 + group['Mes']
+            
+            # Features de lag mensuales
+            group['lag_1'] = group['Cantidad'].shift(1)
+            group['lag_3'] = group['Cantidad'].shift(3)
+            group['lag_6'] = group['Cantidad'].shift(6)
+            group['lag_12'] = group['Cantidad'].shift(12)
+            
+            # Features de rolling mensuales
+            group['rolling_3'] = group['Cantidad'].rolling(window=3, min_periods=1).mean()
+            group['rolling_6'] = group['Cantidad'].rolling(window=6, min_periods=1).mean()
+            group['rolling_12'] = group['Cantidad'].rolling(window=12, min_periods=1).mean()
+            
+            # Features de tendencia mensual
+            group['trend_3'] = group['Cantidad'].rolling(window=3, min_periods=1).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) > 1 else 0)
+            group['trend_6'] = group['Cantidad'].rolling(window=6, min_periods=1).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) > 1 else 0)
+            group['trend_12'] = group['Cantidad'].rolling(window=12, min_periods=1).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) > 1 else 0)
+            
+            # Features de volatilidad mensual
+            group['volatility_3'] = group['Cantidad'].rolling(window=3, min_periods=1).std()
+            group['volatility_6'] = group['Cantidad'].rolling(window=6, min_periods=1).std()
+            group['volatility_12'] = group['Cantidad'].rolling(window=12, min_periods=1).std()
+            
+            # Features estacionales para mensual
+            group['quarter_sin'] = np.sin(2 * np.pi * group['quarter'] / 4)
+            group['quarter_cos'] = np.cos(2 * np.pi * group['quarter'] / 4)
+            
+            # Rellenar valores faltantes
+            numeric_cols = ['lag_1', 'lag_3', 'lag_6', 'lag_12', 'rolling_3', 'rolling_6', 'rolling_12', 'trend_3', 'trend_6', 'trend_12', 'volatility_3', 'volatility_6', 'volatility_12']
+            for col in numeric_cols:
+                group[col] = group[col].fillna(group['Cantidad'].mean())
 
-            # Monthly features with trend
-            X_train = group[['Mes_Num', 'Año', 'Mes_sin', 'Mes_cos']]
+            # Features expandidas para el modelo mensual
+            feature_cols = ['Mes_Num', 'Año', 'Mes_sin', 'Mes_cos', 'quarter', 'month_of_year', 'year_month',
+                          'lag_1', 'lag_3', 'lag_6', 'lag_12', 'rolling_3', 'rolling_6', 'rolling_12',
+                          'trend_3', 'trend_6', 'trend_12', 'volatility_3', 'volatility_6', 'volatility_12',
+                          'quarter_sin', 'quarter_cos']
+            
+            X_train = group[feature_cols]
             y_train = group['Cantidad']
-
-            model = XGBRegressor(n_estimators=200, max_depth=4, learning_rate=0.1, random_state=42, n_jobs=-1, verbosity=0)
-            model.fit(X_train, y_train)
-
+            
+            # Normalización de features
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            
+            # Modelo optimizado para mensual
+            model = XGBRegressor(
+                n_estimators=400, 
+                max_depth=6, 
+                learning_rate=0.08, 
+                subsample=0.9,
+                colsample_bytree=0.9,
+                reg_alpha=0.05,
+                reg_lambda=0.05,
+                random_state=42, 
+                n_jobs=-1, 
+                verbosity=0
+            )
+            
+            # Validación cruzada temporal para mensual
+            if len(X_train) > 12:  # Solo si hay suficientes datos
+                tscv = TimeSeriesSplit(n_splits=3)
+                cv_scores = []
+                for train_idx, val_idx in tscv.split(X_train_scaled):
+                    X_cv_train, X_cv_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
+                    y_cv_train, y_cv_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+                    
+                    model.fit(X_cv_train, y_cv_train)
+                    y_pred = model.predict(X_cv_val)
+                    mae = mean_absolute_error(y_cv_val, y_pred)
+                    cv_scores.append(mae)
+                
+                avg_mae = np.mean(cv_scores)
+                model_metrics.append({
+                    'Pais': pais_val,
+                    'Bodega': bodega_val,
+                    'CL_Season': season_val,
+                    'MAE': avg_mae,
+                    'Data_Points': len(X_train)
+                })
+            
+            # Entrenar modelo final
+            model.fit(X_train_scaled, y_train)
+            
+            # Generar predicciones mensuales
+            last_values = group.tail(1).copy()
+            
             for anio_pred in range(fecha_inicio_pred.year, fecha_fin_pred.year + 1):
                 start_mes = fecha_inicio_pred.month if anio_pred == fecha_inicio_pred.year else 1
                 end_mes = fecha_fin_pred.month if anio_pred == fecha_fin_pred.year else 12
                 for mes in range(start_mes, end_mes + 1):
                     mes_num_pred = anio_pred * 12 + mes
-                    # Monthly prediction with trend
+                    quarter_pred = (mes - 1) // 3 + 1
+                    year_month_pred = anio_pred * 12 + mes
+                    
+                    # Usar valores lag reales mensuales
+                    lag_1_val = last_values['Cantidad'].iloc[-1] if len(group) >= 1 else group['Cantidad'].mean()
+                    lag_3_val = group['Cantidad'].iloc[-3] if len(group) >= 3 else group['Cantidad'].mean()
+                    lag_6_val = group['Cantidad'].iloc[-6] if len(group) >= 6 else group['Cantidad'].mean()
+                    lag_12_val = group['Cantidad'].iloc[-12] if len(group) >= 12 else group['Cantidad'].mean()
+                    
+                    # Rolling values mensuales
+                    rolling_3_val = group['Cantidad'].tail(3).mean()
+                    rolling_6_val = group['Cantidad'].tail(6).mean()
+                    rolling_12_val = group['Cantidad'].tail(12).mean()
+                    
+                    # Tendencia y volatilidad mensual
+                    trend_3_val = group['trend_3'].iloc[-1] if not pd.isna(group['trend_3'].iloc[-1]) else 0
+                    trend_6_val = group['trend_6'].iloc[-1] if not pd.isna(group['trend_6'].iloc[-1]) else 0
+                    trend_12_val = group['trend_12'].iloc[-1] if not pd.isna(group['trend_12'].iloc[-1]) else 0
+                    volatility_3_val = group['volatility_3'].iloc[-1] if not pd.isna(group['volatility_3'].iloc[-1]) else 0
+                    volatility_6_val = group['volatility_6'].iloc[-1] if not pd.isna(group['volatility_6'].iloc[-1]) else 0
+                    volatility_12_val = group['volatility_12'].iloc[-1] if not pd.isna(group['volatility_12'].iloc[-1]) else 0
+                    
+                    # Features estacionales
+                    mes_sin_val = np.sin(2 * np.pi * mes / 12)
+                    mes_cos_val = np.cos(2 * np.pi * mes / 12)
+                    quarter_sin_val = np.sin(2 * np.pi * quarter_pred / 4)
+                    quarter_cos_val = np.cos(2 * np.pi * quarter_pred / 4)
+                    
+                    # Crear features para predicción mensual
                     X_pred = pd.DataFrame({
                         'Mes_Num': [mes_num_pred],
                         'Año': [anio_pred],
-                        'Mes_sin': [np.sin(2 * np.pi * mes / 12)],
-                        'Mes_cos': [np.cos(2 * np.pi * mes / 12)]
+                        'Mes_sin': [mes_sin_val],
+                        'Mes_cos': [mes_cos_val],
+                        'quarter': [quarter_pred],
+                        'month_of_year': [mes],
+                        'year_month': [year_month_pred],
+                        'lag_1': [lag_1_val],
+                        'lag_3': [lag_3_val],
+                        'lag_6': [lag_6_val],
+                        'lag_12': [lag_12_val],
+                        'rolling_3': [rolling_3_val],
+                        'rolling_6': [rolling_6_val],
+                        'rolling_12': [rolling_12_val],
+                        'trend_3': [trend_3_val],
+                        'trend_6': [trend_6_val],
+                        'trend_12': [trend_12_val],
+                        'volatility_3': [volatility_3_val],
+                        'volatility_6': [volatility_6_val],
+                        'volatility_12': [volatility_12_val],
+                        'quarter_sin': [quarter_sin_val],
+                        'quarter_cos': [quarter_cos_val]
                     })
-                    pred = model.predict(X_pred)[0]  # Pure XGBoost prediction
+                    
+                    # Normalizar features de predicción
+                    X_pred_scaled = scaler.transform(X_pred)
+                    pred = model.predict(X_pred_scaled)[0]
+                    
+                    # Aplicar límites razonables
                     pred = max(pred, 0)
+                    pred = min(pred, group['Cantidad'].max() * 1.5)  # Límite superior más conservador para mensual
+                    
                     predicciones.append({
                         'Pais': pais_val,
                         'Bodega': bodega_val,
@@ -398,6 +635,25 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred)
     
     progress_bar.empty()
     status_text.empty()
+    
+    # Mostrar métricas del modelo si están disponibles
+    if model_metrics:
+        metrics_df = pd.DataFrame(model_metrics)
+        st.subheader("📊 Métricas de Calidad del Modelo")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric("MAE Promedio", f"{metrics_df['MAE'].mean():.2f}")
+            st.metric("Grupos Procesados", len(metrics_df))
+        
+        with col2:
+            st.metric("MAE Mínimo", f"{metrics_df['MAE'].min():.2f}")
+            st.metric("Puntos de Datos Promedio", f"{metrics_df['Data_Points'].mean():.0f}")
+        
+        # Mostrar tabla de métricas por grupo
+        with st.expander("📈 Ver Métricas Detalladas por Grupo"):
+            st.dataframe(metrics_df.round(2))
     
     return predicciones
 
@@ -410,7 +666,23 @@ def display_predictions(predicciones, df_model, unidad_tiempo):
     
     st.subheader("🔮 Resultados de Predicción")
     
-    tab1, tab2, tab3 = st.tabs(["Gráfico Principal", "Análisis Detallado", "Datos Exportables"])
+    # Mostrar resumen de predicciones
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Predicciones", len(resultados))
+    
+    with col2:
+        st.metric("Predicción Promedio", f"{resultados['Predicción'].mean():.1f}")
+    
+    with col3:
+        st.metric("Predicción Total", f"{resultados['Predicción'].sum():.0f}")
+    
+    with col4:
+        variacion = (resultados['Predicción'].std() / resultados['Predicción'].mean()) * 100
+        st.metric("Coef. Variación", f"{variacion:.1f}%")
+    
+    tab1, tab2, tab3, tab4 = st.tabs(["Gráfico Principal", "Análisis Detallado", "Datos Exportables", "Calidad del Modelo"])
     
     with tab1:
         historico = df_model.groupby('Periodo')['Cantidad'].sum().reset_index()
@@ -511,6 +783,69 @@ def display_predictions(predicciones, df_model, unidad_tiempo):
             file_name=f'predicciones_{unidad_tiempo.lower()}_{datetime.now().strftime("%Y%m%d")}.csv',
             mime='text/csv'
         )
+        
+        # Estadísticas adicionales
+        st.subheader("📊 Estadísticas Adicionales")
+        
+        stats_col1, stats_col2 = st.columns(2)
+        
+        with stats_col1:
+            st.write("**Por País:**")
+            pais_stats = display_df.groupby('Pais')['Predicción'].agg(['sum', 'mean', 'count']).round(2)
+            st.dataframe(pais_stats)
+        
+        with stats_col2:
+            st.write("**Por Temporada:**")
+            season_stats = display_df.groupby('CL_Season')['Predicción'].agg(['sum', 'mean', 'count']).round(2)
+            st.dataframe(season_stats)
+    
+    with tab4:
+        st.subheader("🎯 Evaluación de Calidad")
+        
+        # Gráfico de distribución de predicciones
+        fig = px.histogram(resultados, x='Predicción', nbins=30, 
+                          title='Distribución de Predicciones')
+        fig.update_layout(height=400)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Análisis de outliers
+        Q1 = resultados['Predicción'].quantile(0.25)
+        Q3 = resultados['Predicción'].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        
+        outliers = resultados[(resultados['Predicción'] < lower_bound) | 
+                             (resultados['Predicción'] > upper_bound)]
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric("Outliers Detectados", len(outliers))
+            st.metric("% Outliers", f"{(len(outliers)/len(resultados)*100):.1f}%")
+        
+        with col2:
+            st.metric("Rango Intercuartil", f"{IQR:.1f}")
+            st.metric("Mediana", f"{resultados['Predicción'].median():.1f}")
+        
+        if len(outliers) > 0:
+            st.subheader("🔴 Predicciones Atípicas")
+            st.dataframe(outliers.round(2))
+        
+        # Recomendaciones de calidad
+        st.subheader("📝 Recomendaciones")
+        
+        if variacion > 100:
+            st.warning("⚠️ Alta variabilidad en las predicciones. Considere revisar los datos de entrada.")
+        elif variacion < 10:
+            st.info("ℹ️ Predicciones muy uniformes. Podría indicar falta de señal en los datos.")
+        else:
+            st.success("✅ Variabilidad de predicciones en rango aceptable.")
+        
+        if len(outliers) > len(resultados) * 0.05:
+            st.warning("⚠️ Muchos outliers detectados. Revisar calidad de los datos históricos.")
+        else:
+            st.success("✅ Cantidad aceptable de outliers.")
 
 def main():
     # Limpiar cualquier estado previo
