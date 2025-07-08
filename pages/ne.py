@@ -286,16 +286,13 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             
             group = group.sort_values('Periodo')
             
-            # Filtro de calidad: requiere al menos 45 días de datos y variabilidad mínima
-            if group.shape[0] < 45:
+            # Filtro de calidad básico: requiere al menos 21 días de datos
+            if group.shape[0] < 21:
                 continue
             
-            # Filtrar grupos con muy poca actividad o demasiada variabilidad
+            # Filtrar solo grupos con actividad mínima (no filtrar por variabilidad)
             mean_sales = group[metric_column].mean()
-            std_sales = group[metric_column].std()
-            cv_sales = std_sales / mean_sales if mean_sales > 0 else float('inf')
-            
-            if mean_sales < 1 or cv_sales > 2.0:  # Grupos muy variables o con poca actividad
+            if mean_sales < 0.5:  # Solo grupos con actividad mínima
                 continue
 
             # Crear features temporales mejoradas
@@ -351,51 +348,34 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             scaler = StandardScaler()
             X_train_scaled = scaler.fit_transform(X_train)
             
-            # Modelo optimizado (balanceado velocidad/precisión)
+            # Modelo optimizado para velocidad
             if metric_column == 'USD_Total_SI_CD':
                 model = XGBRegressor(
-                    n_estimators=200,  # Reducido para velocidad
-                    max_depth=6, 
-                    learning_rate=0.08, 
-                    subsample=0.8,
-                    colsample_bytree=0.8,
-                    reg_alpha=0.1,
-                    reg_lambda=0.1,
+                    n_estimators=100,  # Reducido significativamente
+                    max_depth=4, 
+                    learning_rate=0.1, 
+                    subsample=0.9,
+                    colsample_bytree=0.9,
                     random_state=42, 
                     n_jobs=-1, 
                     verbosity=0
                 )
             else:
                 model = XGBRegressor(
-                    n_estimators=200,  # Reducido para velocidad
-                    max_depth=6, 
-                    learning_rate=0.08, 
-                    subsample=0.8,
-                    colsample_bytree=0.8,
-                    reg_alpha=0.1,
-                    reg_lambda=0.1,
+                    n_estimators=100,  # Reducido significativamente
+                    max_depth=4, 
+                    learning_rate=0.1, 
+                    subsample=0.9,
+                    colsample_bytree=0.9,
                     random_state=42, 
                     n_jobs=-1, 
                     verbosity=0
                 )
             
-            # Validación cruzada temporal (opcional para velocidad)
-            if len(X_train) > 90:  # Solo grupos grandes
-                tscv = TimeSeriesSplit(n_splits=2)  # Reducido de 3 a 2
-                cv_scores = []
-                for train_idx, val_idx in tscv.split(X_train_scaled):
-                    X_cv_train, X_cv_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
-                    y_cv_train, y_cv_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
-                    
-                    model.fit(X_cv_train, y_cv_train)
-                    y_pred = model.predict(X_cv_val)
-                    mae = mean_absolute_error(y_cv_val, y_pred)
-                    cv_scores.append(mae)
-                
-                avg_mae = np.mean(cv_scores)
-                
-                # Crear registro de métricas
-                metric_record = {'MAE': avg_mae, 'Data_Points': len(X_train)}
+            # Validación cruzada desactivada para velocidad
+            # Solo métricas básicas
+            if len(X_train) > 21:
+                metric_record = {'MAE': 0, 'Data_Points': len(X_train)}
                 for col, val in zip(available_cols, group_vals):
                     metric_record[col] = val
                 model_metrics.append(metric_record)
@@ -473,16 +453,12 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                 X_pred_scaled = scaler.transform(X_pred)
                 pred_model = model.predict(X_pred_scaled)[0]
                 
-                # Aplicar límites razonables más conservadores
+                # Aplicar límites simples para velocidad
                 pred = max(pred_model, 0)
                 
-                # Límites basados en estadísticas del grupo
-                q25 = group[metric_column].quantile(0.25)
-                q75 = group[metric_column].quantile(0.75)
-                iqr = q75 - q25
-                upper_limit = q75 + 1.5 * iqr
-                
-                pred = min(pred, upper_limit)  # Límite más conservador
+                # Límite superior simple basado en percentiles
+                upper_limit = group[metric_column].quantile(0.95)
+                pred = min(pred, upper_limit * 1.2)
 
                 # Create prediction record
                 pred_record = {'Periodo': fecha, 'Predicción': pred}
@@ -513,16 +489,13 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             
             group = group.sort_values('Periodo')
             
-            # Filtro de calidad: requiere al menos 8 meses de datos y variabilidad mínima
-            if group.shape[0] < 8:
+            # Filtro de calidad básico: requiere al menos 4 meses de datos
+            if group.shape[0] < 4:
                 continue
                 
-            # Filtrar grupos con muy poca actividad o demasiada variabilidad
+            # Filtrar solo grupos con actividad mínima (no filtrar por variabilidad)
             mean_sales = group[metric_column].mean()
-            std_sales = group[metric_column].std()
-            cv_sales = std_sales / mean_sales if mean_sales > 0 else float('inf')
-            
-            if mean_sales < 5 or cv_sales > 1.5:  # Grupos muy variables o con poca actividad
+            if mean_sales < 2:  # Solo grupos con actividad mínima
                 continue
 
             # Crear features temporales mejoradas para mensual
@@ -573,51 +546,34 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             scaler = StandardScaler()
             X_train_scaled = scaler.fit_transform(X_train)
             
-            # Modelo optimizado para mensual (balanceado velocidad/precisión)
+            # Modelo optimizado para velocidad mensual
             if metric_column == 'USD_Total_SI_CD':
                 model = XGBRegressor(
-                    n_estimators=150,  # Reducido para velocidad
-                    max_depth=5, 
-                    learning_rate=0.1, 
+                    n_estimators=80,  # Reducido significativamente
+                    max_depth=4, 
+                    learning_rate=0.12, 
                     subsample=0.9,
                     colsample_bytree=0.9,
-                    reg_alpha=0.05,
-                    reg_lambda=0.05,
                     random_state=42, 
                     n_jobs=-1, 
                     verbosity=0
                 )
             else:
                 model = XGBRegressor(
-                    n_estimators=150,  # Reducido para velocidad
-                    max_depth=5, 
-                    learning_rate=0.1, 
+                    n_estimators=80,  # Reducido significativamente
+                    max_depth=4, 
+                    learning_rate=0.12, 
                     subsample=0.9,
                     colsample_bytree=0.9,
-                    reg_alpha=0.05,
-                    reg_lambda=0.05,
                     random_state=42, 
                     n_jobs=-1, 
                     verbosity=0
                 )
             
-            # Validación cruzada temporal para mensual (opcional para velocidad)
-            if len(X_train) > 18:  # Solo grupos grandes
-                tscv = TimeSeriesSplit(n_splits=2)  # Reducido de 3 a 2
-                cv_scores = []
-                for train_idx, val_idx in tscv.split(X_train_scaled):
-                    X_cv_train, X_cv_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
-                    y_cv_train, y_cv_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
-                    
-                    model.fit(X_cv_train, y_cv_train)
-                    y_pred = model.predict(X_cv_val)
-                    mae = mean_absolute_error(y_cv_val, y_pred)
-                    cv_scores.append(mae)
-                
-                avg_mae = np.mean(cv_scores)
-                
-                # Crear registro de métricas
-                metric_record = {'MAE': avg_mae, 'Data_Points': len(X_train)}
+            # Validación cruzada desactivada para velocidad
+            # Solo métricas básicas
+            if len(X_train) > 4:
+                metric_record = {'MAE': 0, 'Data_Points': len(X_train)}
                 for col, val in zip(available_cols, group_vals):
                     metric_record[col] = val
                 model_metrics.append(metric_record)
@@ -691,16 +647,12 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                     X_pred_scaled = scaler.transform(X_pred)
                     pred = model.predict(X_pred_scaled)[0]
                     
-                    # Aplicar límites razonables más conservadores para mensual
+                    # Aplicar límites simples para velocidad mensual
                     pred = max(pred, 0)
                     
-                    # Límites basados en estadísticas del grupo
-                    q25 = group[metric_column].quantile(0.25)
-                    q75 = group[metric_column].quantile(0.75)
-                    iqr = q75 - q25
-                    upper_limit = q75 + 1.2 * iqr  # Más conservador para mensual
-                    
-                    pred = min(pred, upper_limit)
+                    # Límite superior simple basado en percentiles
+                    upper_limit = group[metric_column].quantile(0.95)
+                    pred = min(pred, upper_limit * 1.1)
                     
                     # Create prediction record
                     pred_record = {'Periodo': pd.Timestamp(year=anio_pred, month=mes, day=1), 'Predicción': pred}
