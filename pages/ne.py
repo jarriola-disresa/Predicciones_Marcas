@@ -286,8 +286,16 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             
             group = group.sort_values('Periodo')
             
-            # Filtro de calidad: requiere al menos 30 días de datos
-            if group.shape[0] < 30:
+            # Filtro de calidad: requiere al menos 45 días de datos y variabilidad mínima
+            if group.shape[0] < 45:
+                continue
+            
+            # Filtrar grupos con muy poca actividad o demasiada variabilidad
+            mean_sales = group[metric_column].mean()
+            std_sales = group[metric_column].std()
+            cv_sales = std_sales / mean_sales if mean_sales > 0 else float('inf')
+            
+            if mean_sales < 1 or cv_sales > 2.0:  # Grupos muy variables o con poca actividad
                 continue
 
             # Crear features temporales mejoradas
@@ -465,9 +473,16 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                 X_pred_scaled = scaler.transform(X_pred)
                 pred_model = model.predict(X_pred_scaled)[0]
                 
-                # Aplicar límites razonables
+                # Aplicar límites razonables más conservadores
                 pred = max(pred_model, 0)
-                pred = min(pred, group[metric_column].max() * 2)  # Límite superior basado en datos históricos
+                
+                # Límites basados en estadísticas del grupo
+                q25 = group[metric_column].quantile(0.25)
+                q75 = group[metric_column].quantile(0.75)
+                iqr = q75 - q25
+                upper_limit = q75 + 1.5 * iqr
+                
+                pred = min(pred, upper_limit)  # Límite más conservador
 
                 # Create prediction record
                 pred_record = {'Periodo': fecha, 'Predicción': pred}
@@ -498,8 +513,16 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
             
             group = group.sort_values('Periodo')
             
-            # Filtro de calidad: requiere al menos 6 meses de datos
-            if group.shape[0] < 6:
+            # Filtro de calidad: requiere al menos 8 meses de datos y variabilidad mínima
+            if group.shape[0] < 8:
+                continue
+                
+            # Filtrar grupos con muy poca actividad o demasiada variabilidad
+            mean_sales = group[metric_column].mean()
+            std_sales = group[metric_column].std()
+            cv_sales = std_sales / mean_sales if mean_sales > 0 else float('inf')
+            
+            if mean_sales < 5 or cv_sales > 1.5:  # Grupos muy variables o con poca actividad
                 continue
 
             # Crear features temporales mejoradas para mensual
@@ -668,9 +691,16 @@ def predict_sales_original(df, unidad_tiempo, fecha_inicio_pred, fecha_fin_pred,
                     X_pred_scaled = scaler.transform(X_pred)
                     pred = model.predict(X_pred_scaled)[0]
                     
-                    # Aplicar límites razonables
+                    # Aplicar límites razonables más conservadores para mensual
                     pred = max(pred, 0)
-                    pred = min(pred, group[metric_column].max() * 1.5)  # Límite superior más conservador para mensual
+                    
+                    # Límites basados en estadísticas del grupo
+                    q25 = group[metric_column].quantile(0.25)
+                    q75 = group[metric_column].quantile(0.75)
+                    iqr = q75 - q25
+                    upper_limit = q75 + 1.2 * iqr  # Más conservador para mensual
+                    
+                    pred = min(pred, upper_limit)
                     
                     # Create prediction record
                     pred_record = {'Periodo': pd.Timestamp(year=anio_pred, month=mes, day=1), 'Predicción': pred}
